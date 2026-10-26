@@ -1,8 +1,10 @@
 # DermAtelier — Where Clinical Skin AI Governs Virtual Try-On & Checkout
 
-> **Live Production App:** [https://dermatelier.vercel.app](https://dermatelier.vercel.app)  
+> **Live Production App:** [https://dermatelier.vercel.app](https://dermatelier.vercel.app) · **1080p Demo Video:** [https://youtu.be/lJKCZD7woVA](https://youtu.be/lJKCZD7woVA)  
 > **Built for the Perfect Corp. YouCam API Skin AI & eCommerce VTO Hackathon**  
 > **Tracks:** Main Track (**Skin AI + eCommerce VTO Dual Integration**) & **Rising Star Award** (Student Developer)
+
+[![Watch the DermAtelier 1080p Demo Video on YouTube](https://img.youtube.com/vi/lJKCZD7woVA/maxresdefault.jpg)](https://youtu.be/lJKCZD7woVA)
 
 **DermAtelier** solves beauty and fashion eCommerce's **$816B reverse-logistics crisis** by closing the gap between **clinical skin biology** and **Virtual Try-On (VTO)**. Standard VTO renders cosmetics and apparel onto a static JPEG as if human skin were flat paper—ignoring whether a matte liquid pigment will micro-flake at `T+4h` on dehydrated skin, whether a titanium-heavy foundation will cast grey-ashy on Fitzpatrick VI skin, whether an acidic chartreuse top will amplify malar redness, or whether a shopper's cart combines barrier-stripping actives (`1.0% Retinol` × `pH 3.4 Glycolic Acid`).
 
