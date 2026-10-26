@@ -13,6 +13,9 @@ out/
 # YouCam SHA-256 Unit-Shield local cache & runtime ledger
 .youcam-cache/
 
+# Local rendered 1080p demo videos (upload directly to YouTube/Vimeo for Devpost)
+demo-video/*.mp4
+
 # OS & Build
 .DS_Store
 *.tsbuildinfo

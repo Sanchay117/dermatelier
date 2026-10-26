@@ -1,10 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { ExecutionMode, LedgerEntry, UnitShieldLedger, YouCamApiTrace } from "./types";
 
 function getCachePaths() {
-  const root = process.env.YOUCAM_CACHE_DIR || path.join(process.cwd(), ".youcam-cache");
+  const defaultRoot = process.env.VERCEL
+    ? path.join(os.tmpdir(), "youcam-cache")
+    : path.join(process.cwd(), ".youcam-cache");
+  const root = process.env.YOUCAM_CACHE_DIR || defaultRoot;
   return {
     root,
     entriesDir: path.join(root, "entries"),

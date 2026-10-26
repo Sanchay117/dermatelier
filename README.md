@@ -78,6 +78,29 @@ npm run verify:vto      # Live /s2s/v2.0/task/makeup-vto + /s2s/v2.0/task/cloth 
 
 ---
 
+## Production Deployment
+
+### Option A: Vercel (60-Second Zero-Config Deploy)
+1. Push this repository to GitHub and import it at **https://vercel.com/new**.
+2. Add the following Environment Variables in **Project Settings → Environment Variables**:
+   - `YOUCAM_API_KEY` — Your Perfect Corp. YouCam S2S v2.0 Bearer key
+   - `YOUCAM_TOTAL_REDEEMED_UNITS` — `1000`
+   - `YOUCAM_MAX_BUDGET_UNITS` — `150` *(caps live spend per deployment instance)*
+3. Click **Deploy**. `next.config.ts` externalizes `sharp` (`serverExternalPackages: ["fflate", "sharp"]`), and `src/lib/youcam/cache.ts` automatically routes the SHA-256 Unit-Shield cache to `/tmp/youcam-cache` when `process.env.VERCEL` is present.
+
+### Option B: Docker / Railway / Fly.io / Google Cloud Run (Persistent Cache Volume)
+```bash
+docker build -t dermatelier .
+docker run -p 3000:3000 \
+  -e YOUCAM_API_KEY="your_bearer_api_key_here" \
+  -e YOUCAM_TOTAL_REDEEMED_UNITS=1000 \
+  -e YOUCAM_MAX_BUDGET_UNITS=250 \
+  -v dermatelier_cache:/app/.youcam-cache \
+  dermatelier
+```
+
+---
+
 ## Repository Structure
 
 ```text

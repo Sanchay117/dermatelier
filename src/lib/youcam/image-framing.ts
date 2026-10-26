@@ -321,14 +321,47 @@ export async function compositeCroppedRenderOntoPortrait(
   croppedRenderBuffer: Buffer,
   cropBox: CropBox
 ): Promise<string> {
-  const resizedPatch = await sharp(croppedRenderBuffer)
+  const resized = await sharp(croppedRenderBuffer)
     .resize(cropBox.width, cropBox.height, { fit: "fill" })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const w = resized.info.width;
+  const h = resized.info.height;
+  const rgba = Buffer.from(resized.data);
+  const cx = w * 0.5;
+  const cy = h * 0.52;
+  const rx = w * 0.46;
+  const ry = h * 0.46;
+
+  // Smooth elliptical cosine feather so face/lips/cheeks stay 100% crisp with zero rectangular backdrop halo
+  for (let y = 0; y < h; y++) {
+    const ny = (y - cy) / ry;
+    for (let x = 0; x < w; x++) {
+      const nx = (x - cx) / rx;
+      const dist = Math.sqrt(nx * nx + ny * ny);
+      let alpha = 1;
+      if (dist >= 1.0) {
+        alpha = 0;
+      } else if (dist > 0.68) {
+        const t = (dist - 0.68) / 0.32;
+        alpha = 0.5 * (1 + Math.cos(Math.PI * t));
+      }
+      rgba[(y * w + x) * 4 + 3] = Math.round(255 * alpha);
+    }
+  }
+
+  const featheredPng = await sharp(rgba, {
+    raw: { width: w, height: h, channels: 4 },
+  })
+    .png()
     .toBuffer();
 
   const merged = await sharp(originalPortraitBuffer)
     .rotate()
-    .composite([{ input: resizedPatch, left: cropBox.left, top: cropBox.top }])
-    .jpeg({ quality: 91 })
+    .composite([{ input: featheredPng, left: cropBox.left, top: cropBox.top }])
+    .jpeg({ quality: 92 })
     .toBuffer();
 
   return `data:image/jpeg;base64,${merged.toString("base64")}`;
