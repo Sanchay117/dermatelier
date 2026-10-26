@@ -86,6 +86,7 @@ npm run verify:vto      # Live /s2s/v2.0/task/makeup-vto + /s2s/v2.0/task/cloth 
    - `YOUCAM_API_KEY` — Your Perfect Corp. YouCam S2S v2.0 Bearer key
    - `YOUCAM_TOTAL_REDEEMED_UNITS` — `1000`
    - `YOUCAM_MAX_BUDGET_UNITS` — `150` *(caps live spend per deployment instance)*
+   - `DEEPGRAM_API_KEY` *(optional)* — Enables Deepgram `aura-2-thalia-en` studio neural TTS for the in-app **Audio Briefing** (automatically falls back to browser Web Speech API if omitted)
 3. Click **Deploy**. `next.config.ts` externalizes `sharp` (`serverExternalPackages: ["fflate", "sharp"]`), and `src/lib/youcam/cache.ts` automatically routes the SHA-256 Unit-Shield cache to `/tmp/youcam-cache` when `process.env.VERCEL` is present.
 
 ### Option B: Docker / Railway / Fly.io / Google Cloud Run (Persistent Cache Volume)

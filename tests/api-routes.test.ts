@@ -5,6 +5,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GET as getLedger } from "@/app/api/youcam/ledger/route";
 import { POST as postSkinAnalysis } from "@/app/api/youcam/skin-analysis/route";
+import { POST as postTts } from "@/app/api/youcam/tts/route";
 import { POST as postVto } from "@/app/api/youcam/vto/route";
 
 describe("Next.js App Router API Endpoints (/api/youcam/*)", () => {
@@ -60,5 +61,26 @@ describe("Next.js App Router API Endpoints (/api/youcam/*)", () => {
     expect(json.ok).toBe(true);
     expect(json.primaryVto.productId).toBe("lip-velvet-crimson-902");
     expect(json.counterpartVto.productId).toBe("lip-peptide-rosewood-408");
+  });
+
+  it("POST /api/youcam/tts validates input and cleanly reports configured:false when Deepgram key is absent", async () => {
+    const savedDg = process.env.DEEPGRAM_API_KEY;
+    const savedTts = process.env.TTS;
+    delete process.env.DEEPGRAM_API_KEY;
+    delete process.env.TTS;
+    try {
+      const req = new NextRequest("http://localhost:3000/api/youcam/tts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "Clinical Skin AI briefing test." }),
+      });
+      const res = await postTts(req);
+      const json = await res.json();
+      expect(res.status).toBe(503);
+      expect(json.configured).toBe(false);
+    } finally {
+      if (savedDg) process.env.DEEPGRAM_API_KEY = savedDg;
+      if (savedTts) process.env.TTS = savedTts;
+    }
   });
 });

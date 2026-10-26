@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -65,8 +65,9 @@ export function DermAtelierApp() {
   const [vtoCache, setVtoCache] = useState<Record<string, VtoRenderResult>>({});
   const [isRenderingVto, setIsRenderingVto] = useState<boolean>(false);
 
-  // Accessibility Audio Concierge State (Web Speech API)
+  // Accessibility Audio Concierge State (Deepgram Aura-2 Neural TTS + Web Speech fallback)
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Cart & Checkout State (pre-populated with realistic shopper clash items so guardrails shine!)
   const [cartIds, setCartIds] = useState<string[]>([
@@ -87,38 +88,74 @@ export function DermAtelierApp() {
     null
   );
 
-  // Clean up Web Speech API on unmount
-  useEffect(() => {
-    return () => {
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
-    };
+  const stopAudioBriefing = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
   }, []);
 
+  // Clean up Deepgram Audio / Web Speech API on unmount
+  useEffect(() => {
+    return () => {
+      stopAudioBriefing();
+    };
+  }, [stopAudioBriefing]);
+
   const toggleAudioBriefing = useCallback(
-    (narrationText: string) => {
+    async (narrationText: string) => {
+      if (isSpeaking) {
+        stopAudioBriefing();
+        return;
+      }
+      stopAudioBriefing();
+      setIsSpeaking(true);
+
+      try {
+        const res = await fetch("/api/youcam/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: narrationText }),
+        });
+        const data = await res.json();
+        if (res.ok && data.ok && data.audioDataUrl && typeof Audio !== "undefined") {
+          const player = new Audio(data.audioDataUrl);
+          audioRef.current = player;
+          player.onended = () => {
+            audioRef.current = null;
+            setIsSpeaking(false);
+          };
+          player.onerror = () => {
+            audioRef.current = null;
+            setIsSpeaking(false);
+          };
+          await player.play();
+          return;
+        }
+      } catch {
+        // Fall through to browser SpeechSynthesis fallback
+      }
+
       if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+        setIsSpeaking(false);
         setBannerAlert({
           type: "info",
-          text: "Browser SpeechSynthesis is unavailable in this environment.",
+          text: "Audio briefing unavailable in this browser environment.",
         });
         return;
       }
-      if (isSpeaking) {
-        window.speechSynthesis.cancel();
-        setIsSpeaking(false);
-        return;
-      }
-      window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(narrationText);
       utterance.rate = 1.02;
       utterance.onend = () => setIsSpeaking(false);
       utterance.onerror = () => setIsSpeaking(false);
-      setIsSpeaking(true);
       window.speechSynthesis.speak(utterance);
     },
-    [isSpeaking]
+    [isSpeaking, stopAudioBriefing]
   );
 
   // Load session API key & fetch initial Unit-Shield ledger
@@ -173,10 +210,7 @@ export function DermAtelierApp() {
   const selectStudioPersona = (personaId: string) => {
     const found = STUDIO_PERSONAS.find((p) => p.id === personaId);
     if (!found) return;
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
+    stopAudioBriefing();
     setCustomPortraitUrl(null);
     setSelectedPersonaId(personaId);
     setReport(found.presetReport);
