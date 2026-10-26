@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { CheckCircle2, KeyRound, ShieldCheck, Terminal, X } from "lucide-react";
 import type { UnitShieldLedger, YouCamApiTrace } from "@/lib/youcam/types";
 
@@ -24,6 +24,19 @@ export function UnitShieldDrawer({
   const [draftKey, setDraftKey] = useState(sessionApiKey);
   const [savedToast, setSavedToast] = useState(false);
 
+  useEffect(() => {
+    setDraftKey(sessionApiKey);
+  }, [sessionApiKey]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const totalUnits = ledger?.totalRedeemedUnits ?? 1000;
@@ -40,7 +53,12 @@ export function UnitShieldDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-xs">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="unit-shield-drawer-title"
+      className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-xs"
+    >
       <div className="flex h-full w-full max-w-xl flex-col border-l border-[#E5DDD0] bg-[#FAF7F2] shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[#E5DDD0] bg-white px-6 py-4">
@@ -49,7 +67,10 @@ export function UnitShieldDrawer({
               <ShieldCheck className="h-4 w-4 text-[#E6A48E]" />
             </div>
             <div>
-              <h3 className="font-editorial text-xl font-semibold text-[#171412]">
+              <h3
+                id="unit-shield-drawer-title"
+                className="font-editorial text-xl font-semibold text-[#171412]"
+              >
                 YouCam 1,000-Unit Shield & S2S Inspector
               </h3>
               <p className="font-telemetry text-[11px] text-[#5F5850]">

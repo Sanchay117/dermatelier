@@ -9,7 +9,8 @@
     "start": "next start --port 3000",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "verify:youcam": "node --env-file-if-exists=.env scripts/verify-youcam.mjs"
+    "verify:youcam": "node --env-file-if-exists=.env scripts/verify-youcam.mjs",
+    "verify:vto": "node --env-file-if-exists=.env scripts/verify-all-vto.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

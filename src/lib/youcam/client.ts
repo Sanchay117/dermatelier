@@ -170,41 +170,40 @@ export function extractResultImageUrl(pollData: Record<string, unknown>): string
 
 export function buildYouCamMakeupEffectsArray(
   product: CatalogProduct,
-  fitzpatrickType?: FitzpatrickType,
-  lipCategoryVariant: "lip_color" | "lipstick" = "lip_color"
+  fitzpatrickType?: FitzpatrickType
 ): Array<Record<string, unknown>> {
   const effects: Array<Record<string, unknown>> = [];
   const spec = product.youcamMakeupEffects;
   if (!spec) return effects;
 
-  if (spec.lipstick) {
-    const textureMap: Record<string, string> = {
-      matte: "matte",
-      satin: "satin",
-      gloss: "glossy",
-      shimmer: "shimmer",
-    };
-    effects.push({
-      category: lipCategoryVariant,
-      pattern: { name: "full" },
-      palettes: [
-        {
-          color: spec.lipstick.color,
-          texture: textureMap[spec.lipstick.texture] || "satin",
-          colorIntensity: Math.max(10, Math.min(100, Math.round(spec.lipstick.intensity * 100))),
-        },
-      ],
-    });
-  }
-
   if (spec.foundation) {
     const calibratedColor = resolveShadeForFitzpatrick(product, fitzpatrickType);
+    const isMatte = product.finish === "matte";
     effects.push({
       category: "foundation",
       palettes: [
         {
           color: calibratedColor,
           colorIntensity: Math.max(10, Math.min(100, Math.round(spec.foundation.intensity * 100))),
+          coverageIntensity: isMatte ? 85 : 48,
+          glowIntensity: isMatte ? 4 : 68,
+        },
+      ],
+    });
+  }
+
+  if (spec.lipstick) {
+    const isMatteLip = product.finish === "matte" || spec.lipstick.texture === "matte";
+    const baseIntensity = Math.max(10, Math.min(100, Math.round(spec.lipstick.intensity * 100)));
+    effects.push({
+      category: "lip_color",
+      shape: { name: "original" },
+      style: { type: "full" },
+      palettes: [
+        {
+          color: spec.lipstick.color,
+          texture: isMatteLip ? "matte" : "satin",
+          colorIntensity: product.finish === "sheer_balm" ? Math.min(52, baseIntensity) : baseIntensity,
         },
       ],
     });
@@ -637,7 +636,7 @@ export async function executeSkinAnalysis(params: {
       const found = STUDIO_PERSONAS.find((p) => p.id === params.personaId);
       if (found) return found.presetReport;
     }
-    return buildDeterministicOfflineReport(params.imageBuffer, params.subjectName);
+    return await buildDeterministicOfflineReport(params.imageBuffer, params.subjectName);
   }
 
   const budgetCheck = canSpendLiveUnits(1, params.apiKeyOverride);
@@ -1122,53 +1121,39 @@ export async function executeProductVto(params: {
     steps,
   });
 
-  const lipVariants: Array<"lip_color" | "lipstick"> = ["lip_color", "lipstick"];
-  let taskId = "";
-  let lastMakeupErr = "";
+  const effectsArray = buildYouCamMakeupEffectsArray(params.product, params.fitzpatrickType);
+  const tMakeup = Date.now();
+  const createRes = await fetch(`${baseUrl}/s2s/v2.0/task/makeup-vto`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      src_file_id: srcFileId,
+      version: "1.0",
+      effects: effectsArray,
+    }),
+  });
+  const rawCreate = await createRes.text();
+  steps.push({
+    step: `Create AI Makeup VTO Task (${params.product.sku})`,
+    method: "POST",
+    endpoint: "/s2s/v2.0/task/makeup-vto",
+    status: createRes.status,
+    durationMs: Date.now() - tMakeup,
+  });
 
-  for (const variant of lipVariants) {
-    const effectsArray = buildYouCamMakeupEffectsArray(
-      params.product,
-      params.fitzpatrickType,
-      variant
-    );
-    const tMakeup = Date.now();
-    const createRes = await fetch(`${baseUrl}/s2s/v2.0/task/makeup-vto`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        src_file_id: srcFileId,
-        version: "1.0",
-        effects: effectsArray,
-      }),
-    });
-    const rawCreate = await createRes.text();
-    steps.push({
-      step: `Create AI Makeup VTO Task (${params.product.sku}, ${variant})`,
-      method: "POST",
-      endpoint: "/s2s/v2.0/task/makeup-vto",
-      status: createRes.status,
-      durationMs: Date.now() - tMakeup,
-    });
-
-    if (createRes.ok) {
-      const createJson = JSON.parse(rawCreate) as Record<string, unknown>;
-      taskId = String(
-        ((createJson.data || createJson.result || createJson) as Record<string, unknown>).task_id || ""
-      );
-      if (taskId) break;
-    }
-    lastMakeupErr = `HTTP ${createRes.status}: ${rawCreate.slice(0, 220)}`;
-    if (!params.product.youcamMakeupEffects?.lipstick || createRes.status === 401 || createRes.status === 403) {
-      break;
-    }
+  if (!createRes.ok) {
+    throw new Error(`YouCam Makeup VTO failed (${createRes.status}): ${rawCreate.slice(0, 220)}`);
   }
 
+  const createJson = JSON.parse(rawCreate) as Record<string, unknown>;
+  const taskId = String(
+    ((createJson.data || createJson.result || createJson) as Record<string, unknown>).task_id || ""
+  );
   if (!taskId) {
-    throw new Error(`YouCam Makeup VTO failed: ${lastMakeupErr}`);
+    throw new Error(`YouCam Makeup VTO did not return task_id: ${rawCreate.slice(0, 220)}`);
   }
 
   const pollData = await pollYouCamTask({

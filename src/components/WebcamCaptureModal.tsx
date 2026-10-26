@@ -20,6 +20,15 @@ export function WebcamCaptureModal({
   const [cameraReady, setCameraReady] = useState<boolean>(false);
 
   useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
+  useEffect(() => {
     if (!isOpen) {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
@@ -92,7 +101,7 @@ export function WebcamCaptureModal({
     ctx.scale(-1, 1);
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetW, targetH);
 
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     onCaptureDataUrl(dataUrl, "Live Webcam Selfie");
     onClose();
   };
@@ -112,7 +121,7 @@ export function WebcamCaptureModal({
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const resizedDataUrl = canvas.toDataURL("image/jpeg", 0.9);
+        const resizedDataUrl = canvas.toDataURL("image/jpeg", 0.92);
         onCaptureDataUrl(resizedDataUrl, file.name.replace(/\.[^.]+$/, ""));
         onClose();
       };
@@ -122,20 +131,29 @@ export function WebcamCaptureModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="webcam-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+    >
       <div className="w-full max-w-md rounded-2xl border border-[#E5DDD0] bg-[#FAF7F2] p-5 shadow-2xl">
         <div className="flex items-center justify-between border-b border-[#E5DDD0] pb-3">
           <div>
-            <h3 className="font-editorial text-xl font-semibold text-[#171412]">
-              Clinical Portrait Capture
+            <h3
+              id="webcam-modal-title"
+              className="font-editorial text-xl font-semibold text-[#171412]"
+            >
+              Dual-Framing Portrait Capture
             </h3>
             <p className="text-xs text-[#5F5850]">
-              Auto-formatted to YouCam S2S v2.0 optimal framing (JPEG ≤ 1152px)
+              Auto-crops &gt;60% Face Macro ROI for Skin AI + preserves upper body for Cloth VTO
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close capture modal"
             className="rounded-lg p-1.5 text-[#5F5850] hover:bg-[#E5DDD0]/50 hover:text-[#171412]"
           >
             <X className="h-4 w-4" />
@@ -150,12 +168,17 @@ export function WebcamCaptureModal({
               muted
               className="h-full w-full scale-x-[-1] object-cover"
             />
-            {/* Dermatological Oval Framing Guide */}
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <div className="h-[52%] w-[56%] rounded-full border-2 border-dashed border-white/65 shadow-[0_0_0_9999px_rgba(23,20,18,0.28)]" />
-              <span className="mt-3 rounded-full bg-black/60 px-3 py-1 font-telemetry text-[10px] text-white/90">
-                Center face & shoulders in even lighting
+            {/* Dual-Zone Dermatological + Upper-Body Framing Guide */}
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-between py-5">
+              <span className="rounded-full bg-black/65 px-2.5 py-0.5 font-telemetry text-[9px] uppercase tracking-wider text-[#E6A48E]">
+                68% Face Macro ROI · YouCam Skin AI Compliant
               </span>
+              <div className="h-[58%] w-[68%] rounded-full border-2 border-dashed border-white/75 shadow-[0_0_0_9999px_rgba(23,20,18,0.28)]" />
+              <div className="w-[84%] border-t border-dashed border-emerald-300/65 pt-1.5 text-center">
+                <span className="rounded-full bg-black/65 px-3 py-0.5 font-telemetry text-[9px] text-emerald-200">
+                  Shoulder Frame · AI Clothes VTO Ready
+                </span>
+              </div>
             </div>
             {cameraError && (
               <div className="absolute inset-0 flex items-center justify-center bg-[#171412]/90 p-6 text-center text-xs text-white/85">
