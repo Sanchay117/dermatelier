@@ -1,11 +1,17 @@
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { buildYouCamCacheKey } from "@/lib/youcam/cache";
-import { DERMATELIER_CATALOG, getProductById } from "@/lib/youcam/catalog";
+import {
+  DERMATELIER_CATALOG,
+  getProductById,
+  resolveShadeForFitzpatrick,
+} from "@/lib/youcam/catalog";
 import { auditCartFormulations, evaluateProductCompatibility } from "@/lib/youcam/dermal-engine";
+import { analyzeSkinColorimetry, prepareSkinAnalysisFrame } from "@/lib/youcam/image-framing";
 import { buildDeterministicOfflineReport } from "@/lib/youcam/local-cv";
 import { STUDIO_PERSONAS } from "@/lib/youcam/presets";
 
-describe("DermAtelier — Dermal Compatibility & Unit-Shield Engine", () => {
+describe("DermAtelier — Dermal Compatibility, CIE L*a*b* ITA° & Unit-Shield Engine", () => {
   it("produces canonical SHA-256 Unit-Shield keys regardless of parameter key order", () => {
     const k1 = buildYouCamCacheKey("skin-analysis", ["img_hash_1"], {
       format: "json",
@@ -17,6 +23,62 @@ describe("DermAtelier — Dermal Compatibility & Unit-Shield Engine", () => {
     });
     expect(k1).toBe(k2);
     expect(k1).toHaveLength(64);
+  });
+
+  it("ensures 100% referential integrity across all catalog calibratedCounterpartId links and Fitzpatrick I–VI shade maps", () => {
+    expect(DERMATELIER_CATALOG.length).toBeGreaterThanOrEqual(12);
+    for (const product of DERMATELIER_CATALOG) {
+      if (product.calibratedCounterpartId) {
+        const target = getProductById(product.calibratedCounterpartId);
+        expect(target, `Dangling counterpart ${product.calibratedCounterpartId} on ${product.id}`).toBeDefined();
+      }
+    }
+
+    const serumTint = getProductById("complexion-ceramide-tint-210")!;
+    const shadeFitzII = resolveShadeForFitzpatrick(serumTint, "II");
+    const shadeFitzVI = resolveShadeForFitzpatrick(serumTint, "VI");
+    expect(shadeFitzII).not.toBe(shadeFitzVI);
+    expect(shadeFitzVI).toBe("#683E28");
+  });
+
+  it("computes accurate dermatological CIE L*a*b* ITA° and Dual-Framing Face ROI crops from decoded RGB pixels", async () => {
+    const porcelainJpeg = await sharp({
+      create: {
+        width: 896,
+        height: 1200,
+        channels: 3,
+        background: { r: 236, g: 205, b: 197 },
+      },
+    })
+      .jpeg({ quality: 92 })
+      .toBuffer();
+
+    const deepGoldenJpeg = await sharp({
+      create: {
+        width: 896,
+        height: 1200,
+        channels: 3,
+        background: { r: 88, g: 57, b: 39 },
+      },
+    })
+      .jpeg({ quality: 92 })
+      .toBuffer();
+
+    const porcelainCol = await analyzeSkinColorimetry(porcelainJpeg);
+    const deepCol = await analyzeSkinColorimetry(deepGoldenJpeg);
+
+    expect(porcelainCol.itaDegrees).toBeGreaterThan(41);
+    expect(["I", "II"]).toContain(porcelainCol.fitzpatrickType);
+
+    expect(deepCol.itaDegrees).toBeLessThan(0);
+    expect(["V", "VI"]).toContain(deepCol.fitzpatrickType);
+
+    const frame = await prepareSkinAnalysisFrame(porcelainJpeg);
+    expect(frame.fullWidth).toBe(896);
+    expect(frame.fullHeight).toBe(1200);
+    expect(frame.cropBox.width).toBeLessThan(600);
+    const croppedMeta = await sharp(frame.croppedBuffer).metadata();
+    expect(croppedMeta.width).toBe(768);
   });
 
   it("flags Ultra-Matte Blue-Crimson (#902) as a dermal clash on Ananya's reactive warm-olive skin and verifies Satin Rosewood (#408)", () => {
@@ -51,7 +113,7 @@ describe("DermAtelier — Dermal Compatibility & Unit-Shield Engine", () => {
     expect(zuriVerdict.clashReasons.some((r) => r.includes("Fitzpatrick VI"))).toBe(true);
   });
 
-  it("intercepts Retinol 1.0% + pH 3.4 Glycolic AHA collision in cart and restores >90 safety after smart swaps", () => {
+  it("intercepts Retinol 1.0% + pH 3.4 Glycolic AHA collision in cart and restores >85 safety after smart swaps", () => {
     const ananyaReport = STUDIO_PERSONAS.find((p) => p.id === "ananya")!.presetReport;
     const hazardousCart = [
       "lip-velvet-crimson-902",
@@ -79,12 +141,23 @@ describe("DermAtelier — Dermal Compatibility & Unit-Shield Engine", () => {
     expect(cleanAudit.estimatedSavedReturnUsd).toBeGreaterThan(80);
   });
 
-  it("produces deterministic, repeatable 14-metric reports for identical byte buffers offline", () => {
-    const sampleBuf = Buffer.alloc(4096, 137);
-    const r1 = buildDeterministicOfflineReport(sampleBuf, "Test Subject");
-    const r2 = buildDeterministicOfflineReport(sampleBuf, "Test Subject");
+  it("produces deterministic, repeatable 14-metric reports for identical portrait buffers offline", async () => {
+    const sampleJpeg = await sharp({
+      create: {
+        width: 320,
+        height: 400,
+        channels: 3,
+        background: { r: 194, g: 146, b: 118 },
+      },
+    })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const r1 = await buildDeterministicOfflineReport(sampleJpeg, "Test Subject");
+    const r2 = await buildDeterministicOfflineReport(sampleJpeg, "Test Subject");
 
     expect(r1.overallRawScore).toBe(r2.overallRawScore);
+    expect(r1.itaDegrees).toBeDefined();
     expect(r1.metrics).toHaveLength(14);
     expect(r1.metrics.map((m) => m.rawScore)).toEqual(r2.metrics.map((m) => m.rawScore));
   });
