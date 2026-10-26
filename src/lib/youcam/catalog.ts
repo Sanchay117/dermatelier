@@ -1,4 +1,4 @@
-import type { CatalogProduct } from "./types";
+import type { CatalogProduct, FitzpatrickType } from "./types";
 
 export const DERMATELIER_CATALOG: CatalogProduct[] = [
   // ======================== LIP COUTURE (MAKEUP VTO) ========================
@@ -88,9 +88,17 @@ export const DERMATELIER_CATALOG: CatalogProduct[] = [
     category: "complexion",
     priceUsd: 52,
     swatchHex: "#D8B39C",
+    fitzpatrickShadeMap: {
+      I: "#EAD2C2",
+      II: "#DFC0AE",
+      III: "#CEAA94",
+      IV: "#C49D88",
+      V: "#A58374", // Intentionally titanium-ashy on V-VI to demonstrate real non-inclusive cast
+      VI: "#8E7268",
+    },
     finish: "matte",
     youcamMakeupEffects: {
-      foundation: { color: "#D8B39C", intensity: 0.85 },
+      foundation: { color: "#D8B39C", intensity: 0.82 },
       blush: { color: "#C95B72", intensity: 0.35 },
     },
     dermalPhysics: {
@@ -110,14 +118,22 @@ export const DERMATELIER_CATALOG: CatalogProduct[] = [
     sku: "DA-CMP-210",
     brand: "DermAtelier Lab",
     name: "Biomimetic Ceramide + Niacinamide Serum Skin Tint",
-    subtitle: "Adaptive iron-oxide micro-spheres · Non-comedogenic pore-blurring silk",
+    subtitle: "Fitzpatrick I–VI adaptive iron-oxide micro-spheres · Pore-blurring silk",
     category: "complexion",
     priceUsd: 48,
     swatchHex: "#B98562",
+    fitzpatrickShadeMap: {
+      I: "#EDD3C4",
+      II: "#E4C3AE",
+      III: "#CFA386",
+      IV: "#B98562",
+      V: "#8F5D3E",
+      VI: "#683E28",
+    },
     finish: "dewy_serum",
     youcamMakeupEffects: {
-      foundation: { color: "#B98562", intensity: 0.48 },
-      blush: { color: "#B86456", intensity: 0.36 },
+      foundation: { color: "#B98562", intensity: 0.46 },
+      blush: { color: "#B86456", intensity: 0.34 },
     },
     dermalPhysics: {
       moistureDemand: 14,
@@ -129,7 +145,7 @@ export const DERMATELIER_CATALOG: CatalogProduct[] = [
     },
     activeIngredients: ["ceramide_np", "niacinamide_5"],
     baselineReturnRatePct: 11,
-    badge: "Zero-Flashback · Non-Comedogenic",
+    badge: "Fitzpatrick I–VI Adaptive · Zero-Flashback",
   },
 
   // ======================== APPAREL VTO (/s2s/v2.0/task/cloth) ========================
@@ -298,8 +314,41 @@ export const DERMATELIER_CATALOG: CatalogProduct[] = [
     baselineReturnRatePct: 7,
     badge: "Fitzpatrick I–VI PIH Safe",
   },
+  {
+    id: "skin-azelaic-centella",
+    sku: "DA-RX-112",
+    brand: "DermAtelier Lab",
+    name: "10% Azelaic Acid + Centella Cica-Calm PM Renewal Emulsion",
+    subtitle: "Gentle retinoid-alternative cellular renewal · Zero barrier-peeling or erythema spike",
+    category: "skincare_active",
+    priceUsd: 40,
+    swatchHex: "#E3ECE4",
+    clinicalRole: "pm_renew",
+    activeIngredients: ["azelaic_10", "centella_panthenol", "ceramide_np"],
+    dermalPhysics: {
+      moistureDemand: 8,
+      poreOcclusionRisk: 6,
+      erythemaAmplification: 4,
+      textureClingFactor: 6,
+      idealUndertones: ["warm_olive", "cool_rosy", "warm_golden", "neutral_balanced"],
+      clashingUndertones: [],
+      phLevel: 5.4,
+    },
+    baselineReturnRatePct: 6,
+    badge: "Reactive-Barrier Retinoid Alternative",
+  },
 ];
 
 export function getProductById(id: string): CatalogProduct | undefined {
   return DERMATELIER_CATALOG.find((item) => item.id === id);
+}
+
+export function resolveShadeForFitzpatrick(
+  product: CatalogProduct,
+  fitzpatrickType?: FitzpatrickType
+): string {
+  if (fitzpatrickType && product.fitzpatrickShadeMap?.[fitzpatrickType]) {
+    return product.fitzpatrickShadeMap[fitzpatrickType]!;
+  }
+  return product.youcamMakeupEffects?.foundation?.color || product.swatchHex;
 }

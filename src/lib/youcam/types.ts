@@ -98,6 +98,8 @@ export interface SkinAnalysisReport {
   chronologicalAgeHint?: number;
   barrierIntegrityScore: number;
   fitzpatrickType: FitzpatrickType;
+  itaDegrees?: number;
+  cieLab?: { l: number; a: number; b: number };
   undertone: UndertoneClass;
   undertoneLabel: string;
   hexSkinTone: string;
@@ -137,6 +139,8 @@ export interface CatalogProduct {
   priceUsd: number;
   swatchHex: string;
   secondaryHex?: string;
+  /** Fitzpatrick-adaptive shade map so complexion tints adapt across I-VI skin tones */
+  fitzpatrickShadeMap?: Partial<Record<FitzpatrickType, string>>;
   finish?: CosmeticFinish;
   garmentCategory?: "upper_body" | "lower_body" | "full_body";
   garmentImageUrl?: string;

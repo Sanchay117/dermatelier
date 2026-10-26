@@ -10,6 +10,14 @@ import {
   sha256Buffer,
   writeCachedJson,
 } from "./cache";
+import { resolveShadeForFitzpatrick } from "./catalog";
+import {
+  analyzeSkinColorimetry,
+  compositeCroppedRenderOntoPortrait,
+  prepareSkinAnalysisFrame,
+  remapCroppedMaskToFullPortrait,
+  type PreparedSkinFrame,
+} from "./image-framing";
 import { buildDeterministicOfflineReport } from "./local-cv";
 import { STUDIO_PERSONAS } from "./presets";
 import {
@@ -19,7 +27,6 @@ import {
   type FitzpatrickType,
   type SkinAnalysisReport,
   type SkinMetricScore,
-  type UndertoneClass,
   type VtoRenderResult,
   type YouCamSkinAction,
 } from "./types";
@@ -122,19 +129,114 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function buildSafePresignedHeaders(
+  signedHeaders: Record<string, string> | undefined,
+  fallbackMime: string
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  let hasContentType = false;
+  if (signedHeaders) {
+    for (const [k, v] of Object.entries(signedHeaders)) {
+      result[k] = v;
+      if (k.toLowerCase() === "content-type") {
+        hasContentType = true;
+      }
+    }
+  }
+  if (!hasContentType) {
+    result["Content-Type"] = fallbackMime;
+  }
+  return result;
+}
+
+export function extractResultImageUrl(pollData: Record<string, unknown>): string | undefined {
+  const resultsNode = (pollData.results ?? pollData) as Record<string, unknown> | Array<Record<string, unknown>>;
+  if (Array.isArray(resultsNode)) {
+    const first = resultsNode[0];
+    if (first && typeof first.url === "string") return first.url;
+    if (first && typeof first.output_url === "string") return first.output_url;
+  } else if (resultsNode && typeof resultsNode === "object") {
+    if (typeof resultsNode.url === "string") return resultsNode.url;
+    if (typeof resultsNode.output_url === "string") return resultsNode.output_url;
+    if (Array.isArray(resultsNode.output) && resultsNode.output[0]) {
+      const firstOut = resultsNode.output[0] as Record<string, unknown>;
+      if (typeof firstOut.url === "string") return firstOut.url;
+      if (typeof firstOut.output_url === "string") return firstOut.output_url;
+    }
+  }
+  if (typeof pollData.url === "string") return pollData.url;
+  return undefined;
+}
+
+export function buildYouCamMakeupEffectsArray(
+  product: CatalogProduct,
+  fitzpatrickType?: FitzpatrickType,
+  lipCategoryVariant: "lip_color" | "lipstick" = "lip_color"
+): Array<Record<string, unknown>> {
+  const effects: Array<Record<string, unknown>> = [];
+  const spec = product.youcamMakeupEffects;
+  if (!spec) return effects;
+
+  if (spec.lipstick) {
+    const textureMap: Record<string, string> = {
+      matte: "matte",
+      satin: "satin",
+      gloss: "glossy",
+      shimmer: "shimmer",
+    };
+    effects.push({
+      category: lipCategoryVariant,
+      pattern: { name: "full" },
+      palettes: [
+        {
+          color: spec.lipstick.color,
+          texture: textureMap[spec.lipstick.texture] || "satin",
+          colorIntensity: Math.max(10, Math.min(100, Math.round(spec.lipstick.intensity * 100))),
+        },
+      ],
+    });
+  }
+
+  if (spec.foundation) {
+    const calibratedColor = resolveShadeForFitzpatrick(product, fitzpatrickType);
+    effects.push({
+      category: "foundation",
+      palettes: [
+        {
+          color: calibratedColor,
+          colorIntensity: Math.max(10, Math.min(100, Math.round(spec.foundation.intensity * 100))),
+        },
+      ],
+    });
+  }
+
+  if (spec.blush) {
+    effects.push({
+      category: "blush",
+      pattern: { name: "2colors6" },
+      palettes: [
+        {
+          color: spec.blush.color,
+          texture: "matte",
+          colorIntensity: Math.max(10, Math.min(100, Math.round(spec.blush.intensity * 100))),
+        },
+      ],
+    });
+  }
+
+  return effects;
+}
+
 async function uploadYouCamFile(params: {
   buffer: Buffer;
   mimeType: string;
   fileName: string;
-  serviceSlug: "skin-analysis" | "makeup-vto" | "cloth";
+  serviceSlug: "skin-analysis" | "makeup-vto" | "look-vto" | "cloth";
   apiKey: string;
   steps: ApiStepTrace[];
 }): Promise<string> {
   const baseUrl = getBaseUrl();
-  const candidateEndpoints = [
-    `/s2s/v2.0/file/${params.serviceSlug}`,
-    `/s2s/v2.0/file`,
-  ];
+  const candidateEndpoints = [`/s2s/v2.0/file/${params.serviceSlug}`, `/s2s/v2.0/file`];
 
   const payload = {
     files: [
@@ -200,10 +302,7 @@ async function uploadYouCamFile(params: {
     throw new Error("YouCam File API response missing presigned upload URL");
   }
 
-  const putHeaders: Record<string, string> = {
-    "Content-Type": params.mimeType,
-    ...(uploadSpec.headers || {}),
-  };
+  const putHeaders = buildSafePresignedHeaders(uploadSpec.headers, params.mimeType);
 
   const tPut = Date.now();
   const putRes = await fetch(uploadSpec.url, {
@@ -227,6 +326,15 @@ async function uploadYouCamFile(params: {
   return fileId;
 }
 
+class YouCamTaskError extends Error {
+  errorCode?: string;
+  constructor(message: string, errorCode?: string) {
+    super(message);
+    this.name = "YouCamTaskError";
+    this.errorCode = errorCode;
+  }
+}
+
 async function pollYouCamTask(params: {
   taskPathCandidates: string[];
   apiKey: string;
@@ -248,7 +356,11 @@ async function pollYouCamTask(params: {
       },
     });
 
-    if (res.status === 404 && params.taskPathCandidates.length > 1 && workingPath === params.taskPathCandidates[0]) {
+    if (
+      res.status === 404 &&
+      params.taskPathCandidates.length > 1 &&
+      workingPath === params.taskPathCandidates[0]
+    ) {
       workingPath = params.taskPathCandidates[1];
       res = await fetch(`${baseUrl}${workingPath}`, {
         method: "GET",
@@ -286,16 +398,63 @@ async function pollYouCamTask(params: {
       return data;
     }
     if (taskStatus === "error" || taskStatus === "failed") {
-      throw new Error(`YouCam task failed: ${JSON.stringify(data).slice(0, 240)}`);
+      const errCode = typeof data.error === "string" ? data.error : undefined;
+      const errMsg =
+        typeof data.error_message === "string"
+          ? `${errCode ? `${errCode}: ` : ""}${data.error_message}`
+          : JSON.stringify(data).slice(0, 240);
+      throw new YouCamTaskError(`YouCam task failed (${errMsg})`, errCode);
     }
   }
 
   throw new Error(`YouCam task polling timed out after ${timeoutMs}ms`);
 }
 
+async function remapOrPersistMask(
+  rawBytesOrUrl: Buffer | string,
+  frame?: PreparedSkinFrame
+): Promise<string | undefined> {
+  try {
+    let maskBuf: Buffer;
+    if (typeof rawBytesOrUrl === "string") {
+      if (rawBytesOrUrl.startsWith("data:")) {
+        const m = rawBytesOrUrl.match(/^data:[^;]+;base64,(.+)$/);
+        if (!m) return rawBytesOrUrl;
+        maskBuf = Buffer.from(m[1], "base64");
+      } else {
+        const res = await fetch(rawBytesOrUrl);
+        if (!res.ok) return undefined;
+        maskBuf = Buffer.from(await res.arrayBuffer());
+      }
+    } else {
+      maskBuf = rawBytesOrUrl;
+    }
+
+    if (frame) {
+      return await remapCroppedMaskToFullPortrait(
+        maskBuf,
+        frame.cropBox,
+        frame.fullWidth,
+        frame.fullHeight
+      );
+    }
+    return `data:image/png;base64,${maskBuf.toString("base64")}`;
+  } catch {
+    if (typeof rawBytesOrUrl === "string") {
+      try {
+        return await persistRemoteAssetAsDataUrl(rawBytesOrUrl, "image/png");
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+}
+
 async function parseYouCamSkinPayload(
   taskData: Record<string, unknown>,
-  personaHintId?: string
+  personaHintId?: string,
+  preparedFrame?: PreparedSkinFrame
 ): Promise<{
   metrics: SkinMetricScore[];
   skinAge?: number;
@@ -323,15 +482,12 @@ async function parseYouCamSkinPayload(
       if (rawType in ACTION_METADATA) {
         const uiScore = Number(entry.ui_score ?? entry.score ?? 75);
         const rawScore = Number(entry.raw_score ?? uiScore - 5);
-        const maskUrls = (entry.mask_urls as string[]) || (entry.mask_url ? [String(entry.mask_url)] : []);
-        let maskDataUrl: string | undefined;
-        if (maskUrls[0]) {
-          try {
-            maskDataUrl = await persistRemoteAssetAsDataUrl(maskUrls[0], "image/png");
-          } catch {
-            // Optional mask persistence fallback
-          }
-        }
+        const maskUrls =
+          (entry.mask_urls as string[]) || (entry.mask_url ? [String(entry.mask_url)] : []);
+        const maskDataUrl = maskUrls[0]
+          ? await remapOrPersistMask(maskUrls[0], preparedFrame)
+          : undefined;
+
         const meta = ACTION_METADATA[rawType];
         const fallbackHotspots =
           personaFallback?.metrics.find((m) => m.action === rawType)?.hotspots || [];
@@ -389,8 +545,10 @@ async function parseYouCamSkinPayload(
           (k) => k.includes(action) && (k.endsWith(".png") || k.endsWith(".jpg"))
         );
         if (matchingMaskKey) {
-          const mime = matchingMaskKey.endsWith(".png") ? "image/png" : "image/jpeg";
-          maskDataUrl = `data:${mime};base64,${Buffer.from(archive[matchingMaskKey]).toString("base64")}`;
+          maskDataUrl = await remapOrPersistMask(
+            Buffer.from(archive[matchingMaskKey]),
+            preparedFrame
+          );
         }
 
         const meta = ACTION_METADATA[action];
@@ -433,7 +591,7 @@ export async function executeSkinAnalysis(params: {
   const imgHash = sha256Buffer(params.imageBuffer);
   const cacheKey = buildYouCamCacheKey("skin-analysis", [imgHash], {
     actions: STANDARD_SKIN_ACTIONS,
-    v: "2.0",
+    framing: "dual-roi-v2.1",
   });
 
   // 1. Check SHA-256 Unit-Shield Disk Cache First (0 Units!)
@@ -473,7 +631,6 @@ export async function executeSkinAnalysis(params: {
     };
   }
 
-  // 2. If Persona Preset requested without forceLive & no API key, return studio preset cleanly
   const cfg = getUnitShieldConfig(params.apiKeyOverride);
   if (!cfg.apiKeyConfigured) {
     if (params.personaId) {
@@ -488,80 +645,149 @@ export async function executeSkinAnalysis(params: {
     throw new Error(budgetCheck.reason || "Unit-Shield budget prevented live call");
   }
 
-  // 3. Execute Authentic Live Perfect Corp YouCam S2S v2.0 Workflow
+  // 2. Dual-Framing Face Crop (>60% face-width rule) + CIE L*a*b* ITA° Colorimetry
   const steps: ApiStepTrace[] = [];
-  const fileId = await uploadYouCamFile({
-    buffer: params.imageBuffer,
-    mimeType: params.mimeType,
-    fileName: params.fileName,
-    serviceSlug: "skin-analysis",
-    apiKey: cfg.apiKey,
-    steps,
-  });
-
   const baseUrl = getBaseUrl();
-  const actionTiers: YouCamSkinAction[][] = [
-    STANDARD_SKIN_ACTIONS,
-    ["wrinkle", "pore", "texture", "acne", "redness", "oiliness", "moisture", "age_spot", "radiance", "dark_circle_v2"],
-    ["wrinkle", "pore", "texture", "acne"],
-  ];
 
-  let taskId = "";
-  let createError = "";
-  for (const dstActions of actionTiers) {
-    const tCreate = Date.now();
-    const taskRes = await fetch(`${baseUrl}/s2s/v2.0/task/skin-analysis`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        src_file_id: fileId,
-        dst_actions: dstActions,
-        format: "json",
-      }),
+  let colorimetry: Awaited<ReturnType<typeof analyzeSkinColorimetry>> | null = null;
+  let preparedFrame: PreparedSkinFrame | undefined;
+  const tCrop = Date.now();
+  try {
+    colorimetry = await analyzeSkinColorimetry(params.imageBuffer);
+    preparedFrame = await prepareSkinAnalysisFrame(params.imageBuffer, {
+      zoomTier: "standard",
+      centerHintPct: colorimetry.faceCenterPct,
     });
-    const durationMs = Date.now() - tCreate;
-    const rawText = await taskRes.text();
     steps.push({
-      step: `Create Skin Analysis Task (${dstActions.length} dst_actions)`,
+      step: `Dual-Framing Face Macro ROI (${preparedFrame.cropBox.width}×${preparedFrame.cropBox.height} → 768×906, ITA° ${colorimetry.itaDegrees}°)`,
       method: "POST",
-      endpoint: "/s2s/v2.0/task/skin-analysis",
-      status: taskRes.status,
-      durationMs,
+      endpoint: "sharp://dual-framing/face-roi",
+      status: 200,
+      durationMs: Date.now() - tCrop,
+    });
+  } catch {
+    // Graceful fallback for synthetic non-image byte buffers in mocked unit tests
+  }
+
+  const runAttempt = async (zoomTier: "standard" | "tight") => {
+    const activeFrame =
+      zoomTier === "tight" && colorimetry
+        ? await prepareSkinAnalysisFrame(params.imageBuffer, {
+            zoomTier: "tight",
+            centerHintPct: colorimetry.faceCenterPct,
+          })
+        : preparedFrame;
+
+    const uploadBuffer = activeFrame ? activeFrame.croppedBuffer : params.imageBuffer;
+    const uploadMime = activeFrame ? "image/jpeg" : params.mimeType;
+
+    const fileId = await uploadYouCamFile({
+      buffer: uploadBuffer,
+      mimeType: uploadMime,
+      fileName: params.fileName.replace(/\.[^.]+$/, "") + "_face_roi.jpg",
+      serviceSlug: "skin-analysis",
+      apiKey: cfg.apiKey,
+      steps,
     });
 
-    if (taskRes.ok) {
+    const actionTiers: YouCamSkinAction[][] = [
+      STANDARD_SKIN_ACTIONS,
+      [
+        "wrinkle",
+        "pore",
+        "texture",
+        "acne",
+        "redness",
+        "oiliness",
+        "moisture",
+        "age_spot",
+        "radiance",
+        "dark_circle_v2",
+      ],
+      ["wrinkle", "pore", "texture", "acne"],
+    ];
+
+    let lastTaskErr: unknown = null;
+    for (const dstActions of actionTiers) {
+      const tCreate = Date.now();
+      const taskRes = await fetch(`${baseUrl}/s2s/v2.0/task/skin-analysis`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${cfg.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          src_file_id: fileId,
+          dst_actions: dstActions,
+          format: "json",
+        }),
+      });
+      const durationMs = Date.now() - tCreate;
+      const rawText = await taskRes.text();
+      steps.push({
+        step: `Create Skin Analysis Task (${dstActions.length} dst_actions)`,
+        method: "POST",
+        endpoint: "/s2s/v2.0/task/skin-analysis",
+        status: taskRes.status,
+        durationMs,
+      });
+
+      if (!taskRes.ok) {
+        lastTaskErr = new Error(`HTTP ${taskRes.status}: ${rawText.slice(0, 220)}`);
+        if (taskRes.status === 401 || taskRes.status === 403) throw lastTaskErr;
+        continue;
+      }
+
       const parsed = JSON.parse(rawText) as Record<string, unknown>;
       const dataNode = (parsed.data || parsed.result || parsed) as Record<string, unknown>;
-      taskId = String(dataNode.task_id || "");
-      if (taskId) break;
+      const taskId = String(dataNode.task_id || "");
+      if (!taskId) continue;
+
+      try {
+        const taskData = await pollYouCamTask({
+          taskPathCandidates: [
+            `/s2s/v2.0/task/skin-analysis/${encodeURIComponent(taskId)}`,
+            `/s2s/v2.0/skin-analysis/${encodeURIComponent(taskId)}`,
+          ],
+          apiKey: cfg.apiKey,
+          steps,
+        });
+        return { fileId, taskId, taskData, activeFrame };
+      } catch (pollErr) {
+        if (pollErr instanceof YouCamTaskError && pollErr.errorCode === "error_src_face_too_small") {
+          throw pollErr;
+        }
+        lastTaskErr = pollErr;
+      }
     }
-    createError = `HTTP ${taskRes.status}: ${rawText.slice(0, 220)}`;
-    if (taskRes.status === 401 || taskRes.status === 403) break;
+    throw lastTaskErr instanceof Error
+      ? lastTaskErr
+      : new Error("YouCam Skin Analysis failed across action tiers");
+  };
+
+  let attemptResult: Awaited<ReturnType<typeof runAttempt>>;
+  try {
+    attemptResult = await runAttempt("standard");
+  } catch (err) {
+    if (err instanceof YouCamTaskError && err.errorCode === "error_src_face_too_small" && colorimetry) {
+      attemptResult = await runAttempt("tight");
+    } else {
+      throw err;
+    }
   }
 
-  if (!taskId) {
-    throw new Error(`YouCam Skin Analysis task creation failed: ${createError}`);
-  }
+  const { fileId, taskId, taskData, activeFrame } = attemptResult;
+  const parsedSkin = await parseYouCamSkinPayload(taskData, params.personaId, activeFrame);
 
-  const taskData = await pollYouCamTask({
-    taskPathCandidates: [
-      `/s2s/v2.0/task/skin-analysis/${encodeURIComponent(taskId)}`,
-      `/s2s/v2.0/skin-analysis/${encodeURIComponent(taskId)}`,
-    ],
-    apiKey: cfg.apiKey,
-    steps,
-  });
+  const personaPreset = params.personaId
+    ? STUDIO_PERSONAS.find((p) => p.id === params.personaId)?.presetReport
+    : undefined;
+  const offlineBaseline =
+    personaPreset ||
+    (colorimetry
+      ? await buildDeterministicOfflineReport(params.imageBuffer, params.subjectName)
+      : STUDIO_PERSONAS[0].presetReport);
 
-  const parsedSkin = await parseYouCamSkinPayload(taskData, params.personaId);
-  const offlineBaseline = params.personaId
-    ? STUDIO_PERSONAS.find((p) => p.id === params.personaId)?.presetReport ||
-      buildDeterministicOfflineReport(params.imageBuffer, params.subjectName)
-    : buildDeterministicOfflineReport(params.imageBuffer, params.subjectName);
-
-  // Merge live YouCam metrics with any unsubscribed tier metrics so UI always has full 14-metric matrix
   const mergedMetrics: SkinMetricScore[] = [...parsedSkin.metrics];
   for (const fallbackMetric of offlineBaseline.metrics) {
     if (!mergedMetrics.some((m) => m.action === fallbackMetric.action)) {
@@ -570,14 +796,37 @@ export async function executeSkinAnalysis(params: {
   }
 
   const overallRawScore =
-    Math.round((mergedMetrics.reduce((acc, m) => acc + m.rawScore, 0) / mergedMetrics.length) * 10) / 10;
+    Math.round((mergedMetrics.reduce((acc, m) => acc + m.rawScore, 0) / mergedMetrics.length) * 10) /
+    10;
   const overallUiScore =
-    parsedSkin.overallScore ?? Math.min(98, Math.round(mergedMetrics.reduce((a, m) => a + m.uiScore, 0) / mergedMetrics.length));
+    parsedSkin.overallScore ??
+    Math.min(
+      98,
+      Math.round(mergedMetrics.reduce((a, m) => a + m.uiScore, 0) / mergedMetrics.length)
+    );
 
   const moistureRaw = mergedMetrics.find((m) => m.action === "moisture")?.rawScore ?? 70;
   const rednessRaw = mergedMetrics.find((m) => m.action === "redness")?.rawScore ?? 72;
   const barrierIntegrityScore = Math.round(moistureRaw * 0.55 + rednessRaw * 0.45);
   const totalDurationMs = Date.now() - started;
+
+  const fitzpatrickType = personaPreset
+    ? personaPreset.fitzpatrickType
+    : colorimetry?.fitzpatrickType || offlineBaseline.fitzpatrickType;
+  const undertone = personaPreset
+    ? personaPreset.undertone
+    : colorimetry?.undertone || offlineBaseline.undertone;
+  const undertoneLabel = personaPreset
+    ? personaPreset.undertoneLabel
+    : colorimetry?.undertoneLabel || offlineBaseline.undertoneLabel;
+  const hexSkinTone = personaPreset
+    ? personaPreset.hexSkinTone
+    : colorimetry?.hexSkinTone || offlineBaseline.hexSkinTone;
+  const melaninIndex = personaPreset
+    ? personaPreset.melaninIndex
+    : colorimetry?.melaninIndex ?? offlineBaseline.melaninIndex;
+  const itaDegrees = colorimetry?.itaDegrees ?? personaPreset?.itaDegrees;
+  const cieLab = colorimetry?.cieLab ?? personaPreset?.cieLab;
 
   const liveReport: SkinAnalysisReport = {
     reportId: `rep-live-${taskId.slice(0, 10)}`,
@@ -589,15 +838,19 @@ export async function executeSkinAnalysis(params: {
     skinAge: parsedSkin.skinAge ?? offlineBaseline.skinAge,
     chronologicalAgeHint: offlineBaseline.chronologicalAgeHint,
     barrierIntegrityScore,
-    fitzpatrickType: offlineBaseline.fitzpatrickType as FitzpatrickType,
-    undertone: offlineBaseline.undertone as UndertoneClass,
-    undertoneLabel: offlineBaseline.undertoneLabel,
-    hexSkinTone: offlineBaseline.hexSkinTone,
-    melaninIndex: offlineBaseline.melaninIndex,
+    fitzpatrickType,
+    itaDegrees,
+    cieLab,
+    undertone,
+    undertoneLabel,
+    hexSkinTone,
+    melaninIndex,
     erythemaIndex: Math.round(100 - rednessRaw * 0.55),
     hydrationSebumBalance: offlineBaseline.hydrationSebumBalance,
-    clinicalHeadline: `Live YouCam S2S v2.0 Telemetry · Barrier ${barrierIntegrityScore}/100`,
-    clinicalSummary: `Verified live via Perfect Corp YouCam AI Skin Analysis (task ${taskId.slice(
+    clinicalHeadline: `Live YouCam S2S v2.0 · Fitzpatrick ${fitzpatrickType}${
+      itaDegrees !== undefined ? ` (ITA° ${itaDegrees}°)` : ""
+    } · Barrier ${barrierIntegrityScore}/100`,
+    clinicalSummary: `Verified live via Perfect Corp YouCam AI Skin Analysis (${parsedSkin.metrics.length} live CV concerns, task ${taskId.slice(
       0,
       14
     )}…). Dual raw CV (${overallRawScore}) & UI (${overallUiScore}) indices calibrated for VTO.`,
@@ -631,7 +884,10 @@ export async function executeSkinAnalysis(params: {
   return liveReport;
 }
 
-function buildOverlaySpecForProduct(product: CatalogProduct): VtoRenderResult["overlaySpec"] {
+function buildOverlaySpecForProduct(
+  product: CatalogProduct,
+  fitzpatrickType?: FitzpatrickType
+): VtoRenderResult["overlaySpec"] {
   if (product.category === "apparel") {
     const isClash = product.id === "apparel-chartreuse-polo";
     return {
@@ -650,7 +906,9 @@ function buildOverlaySpecForProduct(product: CatalogProduct): VtoRenderResult["o
     lipOpacity: product.finish === "sheer_balm" ? 0.56 : product.finish === "matte" ? 0.86 : 0.72,
     cheekHex: product.youcamMakeupEffects?.blush?.color,
     cheekOpacity: product.youcamMakeupEffects?.blush?.intensity ?? 0,
-    complexionHex: product.youcamMakeupEffects?.foundation?.color,
+    complexionHex: product.youcamMakeupEffects?.foundation
+      ? resolveShadeForFitzpatrick(product, fitzpatrickType)
+      : undefined,
     complexionEvening: product.youcamMakeupEffects?.foundation ? (isMatteClash ? 0.42 : 0.28) : 0,
     textureEmphasisDelta: isMatteClash ? 0.35 : -0.25,
   };
@@ -660,6 +918,7 @@ export async function executeProductVto(params: {
   personBuffer: Buffer;
   personMime: string;
   product: CatalogProduct;
+  fitzpatrickType?: FitzpatrickType;
   garmentBuffer?: Buffer;
   garmentMime?: string;
   preferLiveApi?: boolean;
@@ -673,14 +932,15 @@ export async function executeProductVto(params: {
 
   const cacheKey = buildYouCamCacheKey(serviceName, [personHash, garmentHash], {
     productId: params.product.id,
-    effects: params.product.youcamMakeupEffects || params.product.garmentCategory,
+    fitzpatrick: params.fitzpatrickType || "auto",
+    v: "2.1",
   });
 
-  const overlaySpec = buildOverlaySpecForProduct(params.product);
+  const overlaySpec = buildOverlaySpecForProduct(params.product, params.fitzpatrickType);
 
   // 1. Check SHA-256 Unit-Shield Disk Cache
   const cached = readCachedJson<VtoRenderResult>(cacheKey);
-  if (cached) {
+  if (cached && cached.renderedImageUrl) {
     const durationMs = Date.now() - started;
     recordLedgerEvent({
       service: serviceName,
@@ -724,7 +984,7 @@ export async function executeProductVto(params: {
         timestamp: new Date().toISOString(),
         steps: [
           {
-            step: `Real-Time Dermal Physics Canvas VTO (${params.product.sku}) — Toggle 'Live YouCam VTO' to render via S2S v2.0`,
+            step: `Real-Time Dermal Physics Canvas VTO (${params.product.sku}) — Click 'Run Live YouCam VTO' for S2S v2.0`,
             method: "POST",
             endpoint: `/local/vto/${serviceName}`,
             status: 200,
@@ -751,7 +1011,7 @@ export async function executeProductVto(params: {
     const srcFileId = await uploadYouCamFile({
       buffer: params.personBuffer,
       mimeType: params.personMime,
-      fileName: "shopper_portrait.jpg",
+      fileName: "shopper_upper_body.jpg",
       serviceSlug: "cloth",
       apiKey: cfg.apiKey,
       steps,
@@ -792,7 +1052,9 @@ export async function executeProductVto(params: {
     }
 
     const createJson = JSON.parse(rawCreate) as Record<string, unknown>;
-    const taskId = String(((createJson.data || createJson) as Record<string, unknown>).task_id || "");
+    const taskId = String(
+      ((createJson.data || createJson.result || createJson) as Record<string, unknown>).task_id || ""
+    );
     const pollData = await pollYouCamTask({
       taskPathCandidates: [
         `/s2s/v2.0/task/cloth/${encodeURIComponent(taskId)}`,
@@ -802,17 +1064,11 @@ export async function executeProductVto(params: {
       steps,
     });
 
-    const resultsNode = (pollData.results || pollData) as Record<string, unknown>;
-    const outUrl =
-      typeof resultsNode.url === "string"
-        ? resultsNode.url
-        : Array.isArray(resultsNode) && resultsNode[0]?.url
-        ? String(resultsNode[0].url)
-        : undefined;
-
-    const renderedImageUrl = outUrl
-      ? await persistRemoteAssetAsDataUrl(outUrl, "image/jpeg")
-      : undefined;
+    const outUrl = extractResultImageUrl(pollData);
+    if (!outUrl) {
+      throw new Error("YouCam Clothes VTO completed without an output image URL");
+    }
+    const renderedImageUrl = await persistRemoteAssetAsDataUrl(outUrl, "image/jpeg");
 
     const durationMs = Date.now() - started;
     const result: VtoRenderResult = {
@@ -849,44 +1105,72 @@ export async function executeProductVto(params: {
     return result;
   }
 
-  // Makeup VTO (/s2s/v2.0/task/makeup-vto)
+  // Makeup VTO (/s2s/v2.0/task/makeup-vto) with face-ROI framing & full-portrait compositing
+  let faceFrame: PreparedSkinFrame | undefined;
+  try {
+    faceFrame = await prepareSkinAnalysisFrame(params.personBuffer);
+  } catch {
+    // Non-image buffer in mocked tests falls through directly
+  }
+
   const srcFileId = await uploadYouCamFile({
-    buffer: params.personBuffer,
-    mimeType: params.personMime,
-    fileName: "shopper_portrait.jpg",
+    buffer: faceFrame ? faceFrame.croppedBuffer : params.personBuffer,
+    mimeType: faceFrame ? "image/jpeg" : params.personMime,
+    fileName: "shopper_makeup_roi.jpg",
     serviceSlug: "makeup-vto",
     apiKey: cfg.apiKey,
     steps,
   });
 
-  const tMakeup = Date.now();
-  const createRes = await fetch(`${baseUrl}/s2s/v2.0/task/makeup-vto`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${cfg.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      src_file_id: srcFileId,
-      version: "1.0",
-      effects: params.product.youcamMakeupEffects || {},
-    }),
-  });
-  const rawCreate = await createRes.text();
-  steps.push({
-    step: `Create AI Makeup VTO Task (${params.product.sku})`,
-    method: "POST",
-    endpoint: "/s2s/v2.0/task/makeup-vto",
-    status: createRes.status,
-    durationMs: Date.now() - tMakeup,
-  });
+  const lipVariants: Array<"lip_color" | "lipstick"> = ["lip_color", "lipstick"];
+  let taskId = "";
+  let lastMakeupErr = "";
 
-  if (!createRes.ok) {
-    throw new Error(`YouCam Makeup VTO failed (${createRes.status}): ${rawCreate.slice(0, 220)}`);
+  for (const variant of lipVariants) {
+    const effectsArray = buildYouCamMakeupEffectsArray(
+      params.product,
+      params.fitzpatrickType,
+      variant
+    );
+    const tMakeup = Date.now();
+    const createRes = await fetch(`${baseUrl}/s2s/v2.0/task/makeup-vto`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        src_file_id: srcFileId,
+        version: "1.0",
+        effects: effectsArray,
+      }),
+    });
+    const rawCreate = await createRes.text();
+    steps.push({
+      step: `Create AI Makeup VTO Task (${params.product.sku}, ${variant})`,
+      method: "POST",
+      endpoint: "/s2s/v2.0/task/makeup-vto",
+      status: createRes.status,
+      durationMs: Date.now() - tMakeup,
+    });
+
+    if (createRes.ok) {
+      const createJson = JSON.parse(rawCreate) as Record<string, unknown>;
+      taskId = String(
+        ((createJson.data || createJson.result || createJson) as Record<string, unknown>).task_id || ""
+      );
+      if (taskId) break;
+    }
+    lastMakeupErr = `HTTP ${createRes.status}: ${rawCreate.slice(0, 220)}`;
+    if (!params.product.youcamMakeupEffects?.lipstick || createRes.status === 401 || createRes.status === 403) {
+      break;
+    }
   }
 
-  const createJson = JSON.parse(rawCreate) as Record<string, unknown>;
-  const taskId = String(((createJson.data || createJson) as Record<string, unknown>).task_id || "");
+  if (!taskId) {
+    throw new Error(`YouCam Makeup VTO failed: ${lastMakeupErr}`);
+  }
+
   const pollData = await pollYouCamTask({
     taskPathCandidates: [
       `/s2s/v2.0/task/makeup-vto/${encodeURIComponent(taskId)}`,
@@ -896,17 +1180,26 @@ export async function executeProductVto(params: {
     steps,
   });
 
-  const resultsNode = (pollData.results || pollData) as Record<string, unknown>;
-  const outUrl =
-    typeof resultsNode.url === "string"
-      ? resultsNode.url
-      : Array.isArray(resultsNode) && resultsNode[0]?.url
-      ? String(resultsNode[0].url)
-      : undefined;
+  const outUrl = extractResultImageUrl(pollData);
+  if (!outUrl) {
+    throw new Error("YouCam Makeup VTO completed without an output image URL");
+  }
 
-  const renderedImageUrl = outUrl
-    ? await persistRemoteAssetAsDataUrl(outUrl, "image/jpeg")
-    : undefined;
+  let renderedImageUrl: string;
+  if (faceFrame) {
+    const outRes = await fetch(outUrl);
+    if (!outRes.ok) {
+      throw new Error(`Failed to fetch Makeup VTO output (${outRes.status})`);
+    }
+    const renderedPatchBuf = Buffer.from(await outRes.arrayBuffer());
+    renderedImageUrl = await compositeCroppedRenderOntoPortrait(
+      params.personBuffer,
+      renderedPatchBuf,
+      faceFrame.cropBox
+    );
+  } else {
+    renderedImageUrl = await persistRemoteAssetAsDataUrl(outUrl, "image/jpeg");
+  }
 
   const durationMs = Date.now() - started;
   const result: VtoRenderResult = {

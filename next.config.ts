@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
-  serverExternalPackages: ["fflate"],
+  serverExternalPackages: ["fflate", "sharp"],
 };
 
 export default nextConfig;

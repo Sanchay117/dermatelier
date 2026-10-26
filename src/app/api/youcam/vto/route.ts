@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
       imageDataUrl?: string;
       productId: string;
       counterpartProductId?: string;
+      fitzpatrickType?: "I" | "II" | "III" | "IV" | "V" | "VI";
       preferLiveApi?: boolean;
     };
     const apiKeyOverride = req.headers.get("x-youcam-api-key") || undefined;
@@ -58,6 +59,7 @@ export async function POST(req: NextRequest) {
       personBuffer,
       personMime,
       product,
+      fitzpatrickType: body.fitzpatrickType,
       garmentBuffer: loadGarmentBufferIfNeeded(product.garmentImageUrl),
       preferLiveApi: Boolean(body.preferLiveApi),
       apiKeyOverride,
@@ -71,6 +73,7 @@ export async function POST(req: NextRequest) {
           personBuffer,
           personMime,
           product: counterpart,
+          fitzpatrickType: body.fitzpatrickType,
           garmentBuffer: loadGarmentBufferIfNeeded(counterpart.garmentImageUrl),
           preferLiveApi: Boolean(body.preferLiveApi),
           apiKeyOverride,
