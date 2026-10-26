@@ -117,7 +117,7 @@ export function MerchantRoiView({
   );
 
   const embedSnippet = `<script
-  src="https://cdn.dermatelier.io/youcam-return-shield.v2.js"
+  src="https://dermatelier.vercel.app/sdk/youcam-return-shield.v2.js"
   data-merchant-id="shopify_atelier_live"
   data-youcam-services="skin-analysis,makeup-vto,cloth"
   data-barrier-cart-guard="strict"
