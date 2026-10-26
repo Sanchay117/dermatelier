@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+
+# Environment
+.env
+.env*.local
+
+# YouCam SHA-256 Unit-Shield local cache & runtime ledger
+.youcam-cache/
+
+# OS & Build
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+coverage/

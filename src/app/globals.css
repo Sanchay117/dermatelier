@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+:root {
+  --font-serif: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --bg-alabaster: #faf7f2;
+  --bg-ivory: #f3ede3;
+  --bg-card: #ffffff;
+  --ink-espresso: #171412;
+  --ink-muted: #5f5850;
+  --border-warm: #e5ddd0;
+  --accent-terracotta: #b85d43;
+  --accent-sage: #2f6853;
+  --accent-amber: #b97524;
+  --accent-crimson: #a63232;
+}
+
+@layer base {
+  body {
+    background-color: var(--bg-alabaster);
+    color: var(--ink-espresso);
+    font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, .font-editorial {
+    font-family: var(--font-serif), Georgia, serif;
+  }
+
+  code, pre, .font-telemetry {
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
+  }
+}
+
+@keyframes scanlineSweep {
+  0% {
+    top: 8%;
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.95;
+  }
+  85% {
+    opacity: 0.95;
+  }
+  100% {
+    top: 88%;
+    opacity: 0;
+  }
+}
+
+.animate-scanline {
+  animation: scanlineSweep 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
